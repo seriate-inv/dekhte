@@ -6,7 +6,6 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-import requests
 
 app = Flask(__name__)
 UPLOAD_FOLDER = 'static/uploads'
@@ -17,128 +16,140 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def get_user_filename(name, email, type_):
-    return f"{name}_{email}_{type_}.csv"
-
+# ✅ Home Page
 @app.route('/')
 def index():
     return render_template('index.html')
 
+# ✅ Submit Entry
 @app.route('/submit', methods=['POST'])
 def submit():
     name = request.form['name']
     email = request.form['email']
     entry_type = request.form['type']
-    latitude = request.form.get('latitude', '0')
-    longitude = request.form.get('longitude', '0')
-    address = request.form.get('address', 'Location not available')
+    latitude = request.form.get('latitude', '')
+    longitude = request.form.get('longitude', '')
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    # Check for existing entry if this is an exit
-    if entry_type == 'Exit':
-        entry_exists = False
-        user_filename = get_user_filename(name, email, 'Entry')
-        if os.path.exists(os.path.join(UPLOAD_FOLDER, user_filename.replace('.csv', '.jpg'))):
-            entry_exists = True
-        
-        if not entry_exists:
-            return render_template('error.html', 
-                                 message="No matching entry found for this name and email. Please check your details or contact support.")
-
     image_file = request.files['image']
-    image_ext = os.path.splitext(image_file.filename)[1]
-    image_name = get_user_filename(name, email, entry_type).replace('.csv', image_ext)
+    image_name = secure_filename(image_file.filename)
     image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_name)
     image_file.save(image_path)
 
-    # Save data to CSV
     with open(CSV_FILE, 'a', newline='') as file:
         writer = csv.writer(file)
-        writer.writerow([
-            name, email, entry_type, timestamp, 
-            latitude, longitude, address, image_name
-        ])
+        writer.writerow([name, email, entry_type, timestamp, latitude, longitude, image_name])
     
-    return redirect('/success')
+    return redirect('/')
 
-@app.route('/success')
-def success():
-    return render_template('success.html')
-
+# ✅ Admin Panel with Filters
 @app.route('/admin')
 def admin():
     name_filter = request.args.get('name', '').lower()
     date_filter = request.args.get('date', '')
+    from_date = request.args.get('from_date', '')
+    to_date = request.args.get('to_date', '')
 
     data = []
     if os.path.exists(CSV_FILE):
         with open(CSV_FILE, 'r') as file:
             reader = csv.reader(file)
             for row in reader:
-                if len(row) >= 8:
-                    name, email, type_, timestamp, lat, long, address, img = row
+                if len(row) == 7:
+                    name, email, type_, timestamp, lat, long, img = row
                     if name_filter and name_filter not in name.lower():
                         continue
                     if date_filter and not timestamp.startswith(date_filter):
                         continue
-                    
-                    # Check if image exists
-                    img_exists = os.path.exists(os.path.join(app.config['UPLOAD_FOLDER'], img))
-                    
+                    if not date_filter and not is_within_range(timestamp, from_date, to_date):
+                        continue
                     data.append({
                         'name': name, 'email': email, 'type': type_,
                         'timestamp': timestamp, 'latitude': lat,
-                        'longitude': long, 'address': address, 
-                        'image': img if img_exists else None
+                        'longitude': long, 'image': img
                     })
     return render_template('admin.html', data=data)
 
-@app.route('/delete_image', methods=['POST'])
-def delete_image():
-    image_name = request.form['image']
-    
+# ✅ Delete Image Entry
+@app.route('/delete', methods=['POST'])
+def delete_image_only():
+    target_time = request.form['timestamp']
+    target_img = request.form['image']
+    updated_rows = []
+
+    with open(CSV_FILE, 'r') as file:
+        reader = csv.reader(file)
+        for row in reader:
+            if len(row) == 7:
+                if row[3] == target_time and row[6] == target_img:
+                    row[6] = ''  # Clear image field
+                updated_rows.append(row)
+
+    with open(CSV_FILE, 'w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerows(updated_rows)
+
     try:
-        os.remove(os.path.join(UPLOAD_FOLDER, image_name))
+        os.remove(os.path.join(UPLOAD_FOLDER, target_img))
     except FileNotFoundError:
         pass
 
     return redirect('/admin')
 
+# ✅ Download CSV with filters
 @app.route('/download_csv')
 def download_csv():
     name_filter = request.args.get('name', '').lower()
-    date_filter = request.args.get('date', '')
+    from_date = request.args.get('from_date', '')
+    to_date = request.args.get('to_date', '')
     filtered = []
+
+    # Use absolute path to filtered.csv
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    filtered_path = os.path.join(base_dir, 'filtered.csv')
+
+    if not os.path.exists(CSV_FILE):
+        return "Data file not found!", 404
 
     with open(CSV_FILE, 'r') as file:
         reader = csv.reader(file)
         for row in reader:
-            if len(row) >= 8:
-                if name_filter and name_filter not in row[0].lower():
-                    continue
-                if date_filter and not row[3].startswith(date_filter):
-                    continue
-                filtered.append(row)
+            if len(row) != 7:
+                continue
+            if name_filter and name_filter not in row[0].lower():
+                continue
+            if not is_within_range(row[3], from_date, to_date):
+                continue
+            filtered.append(row)
 
-    with open(FILTERED_CSV, 'w', newline='') as file:
+    if not filtered:
+        return "No matching data found for download.", 404
+
+    with open(filtered_path, 'w', newline='') as file:
         writer = csv.writer(file)
         writer.writerows(filtered)
 
-    return send_file(FILTERED_CSV, as_attachment=True)
+    return send_file(filtered_path, as_attachment=True)
 
+
+# ✅ Email CSV with filters
 @app.route('/email_csv')
 def email_csv():
     name_filter = request.args.get('name', '').lower()
     date_filter = request.args.get('date', '')
+    from_date = request.args.get('from_date', '')
+    to_date = request.args.get('to_date', '')
     filtered = []
 
     with open(CSV_FILE, 'r') as file:
         reader = csv.reader(file)
         for row in reader:
-            if len(row) >= 8:
+            if len(row) == 7:
                 if name_filter and name_filter not in row[0].lower():
                     continue
                 if date_filter and not row[3].startswith(date_filter):
+                    continue
+                if not date_filter and not is_within_range(row[3], from_date, to_date):
                     continue
                 filtered.append(row)
 
@@ -149,6 +160,7 @@ def email_csv():
     send_email_with_attachment(FILTERED_CSV)
     return redirect('/admin')
 
+# ✅ Email function
 def send_email_with_attachment(filepath):
     sender_email = "seriate001archana@gmail.com"
     sender_pass = "wyyf gduw ulql vpqz"
@@ -169,5 +181,22 @@ def send_email_with_attachment(filepath):
         server.login(sender_email, sender_pass)
         server.sendmail(sender_email, EMAIL_TO, msg.as_string())
 
+# ✅ Range Filter Helper
+def is_within_range(timestamp_str, from_date_str, to_date_str):
+    try:
+        entry_date = datetime.strptime(timestamp_str, "%Y-%m-%d %H:%M:%S").date()
+        if from_date_str:
+            from_date = datetime.strptime(from_date_str, "%Y-%m-%d").date()
+            if entry_date < from_date:
+                return False
+        if to_date_str:
+            to_date = datetime.strptime(to_date_str, "%Y-%m-%d").date()
+            if entry_date > to_date:
+                return False
+        return True
+    except:
+        return False
+
+# ✅ Run
 if __name__ == '__main__':
     app.run(debug=True)
