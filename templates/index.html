@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Entry/Exit Form</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+<div class="container mt-5">
+  <h2 class="mb-4 text-center">Entry/Exit Log</h2>
+  <form action="/submit" method="POST" enctype="multipart/form-data" onsubmit="captureLocation(event)">
+    <div class="mb-3">
+      <label class="form-label">Name</label>
+      <input type="text" name="name" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Email</label>
+      <input type="email" name="email" class="form-control" required>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Type</label>
+      <select name="type" class="form-select" required>
+        <option value="">Select</option>
+        <option value="Entry">Entry</option>
+        <option value="Exit">Exit</option>
+      </select>
+    </div>
+    <div class="mb-3">
+      <label class="form-label">Upload Image</label>
+      <input type="file" name="image" class="form-control" accept="image/*" required>
+    </div>
+
+    <input type="hidden" name="latitude" id="latitude">
+    <input type="hidden" name="longitude" id="longitude">
+    <input type="hidden" name="address" id="address">
+    
+    <button type="submit" class="btn btn-primary w-100">Submit</button>
+  </form>
+</div>
+
+<script>
+  function captureLocation(event) {
+    event.preventDefault();
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(async function(position) {
+        const lat = position.coords.latitude;
+        const lng = position.coords.longitude;
+        document.getElementById("latitude").value = lat;
+        document.getElementById("longitude").value = lng;
+        
+        // Reverse geocoding
+        try {
+          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
+          const data = await response.json();
+          const address = data.display_name || "Unknown location";
+          document.getElementById("address").value = address;
+        } catch (error) {
+          console.error("Reverse geocoding failed:", error);
+          document.getElementById("address").value = "Location not available";
+        }
+        
+        event.target.submit();
+      }, function(error) {
+        alert("Location access denied. Please enable location services.");
+        document.getElementById("latitude").value = "0";
+        document.getElementById("longitude").value = "0";
+        document.getElementById("address").value = "Location denied";
+        event.target.submit();
+      });
+    } else {
+      alert("Geolocation not supported by your browser.");
+      document.getElementById("latitude").value = "0";
+      document.getElementById("longitude").value = "0";
+      document.getElementById("address").value = "Unsupported";
+      event.target.submit();
+    }
+  }
+</script>
+</body>
+</html>
